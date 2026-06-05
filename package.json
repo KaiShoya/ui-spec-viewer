@@ -1,0 +1,38 @@
+{
+  "name": "ui-spec-viewer",
+  "displayName": "UI Spec Viewer",
+  "description": "UI仕様向けMarkdownを左右分割で表示するVS Code拡張",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:uiSpecViewer.open",
+    "onLanguage:markdown"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "uiSpecViewer.open",
+        "title": "UI Spec Viewer: Open Split View"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "markdown-it": "^14.1.0"
+  }
+}
