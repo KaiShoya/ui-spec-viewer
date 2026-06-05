@@ -118,15 +118,15 @@ class UiSpecPanel {
 
     const blockHtml = parsed.blocks.map((block) => {
       if (block.kind === "normal") {
-        return `<section class="single">${markdownRenderer.render(block.markdown)}</section>`;
+        return `<section class="single">${this.rewriteImageSources(markdownRenderer.render(block.markdown))}</section>`;
       }
 
       const pair = block.pair;
       const left = pair.leftMarkdown.trim()
-        ? markdownRenderer.render(pair.leftMarkdown)
+        ? this.rewriteImageSources(markdownRenderer.render(pair.leftMarkdown))
         : "<p><em>左側の内容が空です。</em></p>";
       const right = pair.rightMarkdown.trim()
-        ? markdownRenderer.render(pair.rightMarkdown)
+        ? this.rewriteImageSources(markdownRenderer.render(pair.rightMarkdown))
         : "<p><em>右側の内容が空です。</em></p>";
       const rightRatio = Math.max(1, 100 - pair.ratio);
 
@@ -146,48 +146,48 @@ class UiSpecPanel {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>UI Spec Viewer</title>
   <style>
-    :root {
-      color-scheme: light dark;
-    }
-
     body {
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      line-height: 1.6;
+      margin: 0 auto;
+      padding: 0 22px;
+      max-width: 980px;
+      box-sizing: border-box;
+      font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+      font-size: var(--vscode-markdown-font-size, 14px);
+      line-height: var(--vscode-markdown-line-height, 1.6);
+      color: var(--vscode-editor-foreground);
+      background: var(--vscode-editor-background);
       overflow: auto;
     }
 
     main {
-      padding: 16px;
+      padding: 12px 0 24px;
       display: grid;
-      gap: 16px;
+      gap: 14px;
     }
 
     .pair {
       display: grid;
-      border: 1px solid rgba(128, 128, 128, 0.35);
-      border-radius: 8px;
-      overflow: hidden;
-      min-height: 220px;
-      background: rgba(128, 128, 128, 0.06);
+      gap: 0;
+      border-top: 1px solid var(--vscode-panel-border);
+      padding-top: 10px;
     }
 
     .pane {
-      padding: 16px;
+      padding: 0 10px;
       overflow: auto;
     }
 
     .pane-left {
-      border-right: 1px solid rgba(128, 128, 128, 0.35);
-      background: rgba(100, 120, 180, 0.07);
+      border-right: 1px solid var(--vscode-panel-border);
+      padding-left: 0;
     }
 
     .pane-right {
-      background: rgba(70, 170, 120, 0.07);
+      padding-right: 0;
     }
 
     .warning {
-      margin: 0;
+      margin: 0 0 8px;
       padding: 10px 12px;
       border-radius: 6px;
       border: 1px solid #c98b2a;
@@ -197,14 +197,103 @@ class UiSpecPanel {
     }
 
     .single {
-      border: 1px solid rgba(128, 128, 128, 0.35);
-      border-radius: 8px;
-      padding: 16px;
+      padding: 0;
+    }
+
+    p,
+    ul,
+    ol,
+    dl,
+    table,
+    blockquote,
+    pre {
+      margin-top: 0;
+      margin-bottom: 16px;
+    }
+
+    ul,
+    ol {
+      padding-left: 2em;
+    }
+
+    li > p {
+      margin-bottom: 0;
+    }
+
+    h1,
+    h2 {
+      font-weight: 600;
+      padding-bottom: 0.3em;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      margin-top: 24px;
+      margin-bottom: 16px;
+      line-height: 1.25;
+    }
+
+    h1 {
+      font-size: 2em;
+      margin-top: 0;
+    }
+
+    h2 {
+      font-size: 1.5em;
+    }
+
+    h3,
+    h4,
+    h5,
+    h6 {
+      line-height: 1.25;
+      margin-top: 24px;
+      margin-bottom: 16px;
+      font-weight: 600;
+    }
+
+    h3 {
+      font-size: 1.25em;
+    }
+
+    h4 {
+      font-size: 1em;
+    }
+
+    h5 {
+      font-size: 0.875em;
+    }
+
+    h6 {
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
     }
 
     img {
       max-width: 100%;
       height: auto;
+    }
+
+    hr {
+      border: 0;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      margin: 24px 0;
+    }
+
+    table {
+      border-collapse: collapse;
+      display: block;
+      width: max-content;
+      max-width: 100%;
+      overflow: auto;
+    }
+
+    table th,
+    table td {
+      border: 1px solid var(--vscode-panel-border);
+      padding: 6px 13px;
+    }
+
+    table tr {
+      border-top: 1px solid var(--vscode-panel-border);
+      background-color: transparent;
     }
   </style>
 </head>
@@ -215,6 +304,25 @@ class UiSpecPanel {
   <script nonce="${nonce}"></script>
 </body>
 </html>`;
+  }
+
+  private rewriteImageSources(html: string): string {
+    return html.replace(/<img\b([^>]*?)\bsrc=("|')([^"']+)\2([^>]*)>/gi, (_m, before, quote, src, after) => {
+      const resolvedSrc = this.toWebviewImageSrc(src);
+      return `<img${before}src=${quote}${resolvedSrc}${quote}${after}>`;
+    });
+  }
+
+  private toWebviewImageSrc(src: string): string {
+    const rawSrc = src.trim();
+    if (!rawSrc || /^(https?:|data:|vscode-resource:|command:|#)/i.test(rawSrc)) {
+      return rawSrc;
+    }
+
+    const [basePath, suffix = ""] = rawSrc.split(/([?#].*)/, 2);
+    const resolved = path.resolve(path.dirname(this.markdownUri.fsPath), basePath);
+    const webviewUri = this.panel.webview.asWebviewUri(vscode.Uri.file(resolved)).toString();
+    return webviewUri + suffix;
   }
 }
 
@@ -419,45 +527,131 @@ function createMarkdownRenderer(): MarkdownRenderer {
 function renderFallbackMarkdown(input: string): string {
   const lines = input.split(/\r?\n/);
   const out: string[] = [];
-  let inList = false;
+  type ListContext = {
+    indent: number;
+    tag: "ul" | "ol";
+    typeAttr: string;
+    liOpen: boolean;
+  };
 
-  const closeListIfNeeded = () => {
-    if (inList) {
-      out.push("</ul>");
-      inList = false;
+  const listStack: ListContext[] = [];
+
+  const closeOneList = () => {
+    const top = listStack.pop();
+    if (!top) {
+      return;
+    }
+
+    if (top.liOpen) {
+      out.push("</li>");
+    }
+    out.push(`</${top.tag}>`);
+  };
+
+  const closeListsUntilIndent = (targetIndent: number) => {
+    while (listStack.length > 0 && listStack[listStack.length - 1].indent > targetIndent) {
+      closeOneList();
     }
   };
 
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd();
-    if (!line.trim()) {
-      closeListIfNeeded();
+  const closeAllLists = () => {
+    while (listStack.length > 0) {
+      closeOneList();
+    }
+  };
+
+  const ensureListLevel = (indent: number, tag: "ul" | "ol", typeAttr: string) => {
+    if (listStack.length === 0) {
+      out.push(`<${tag}${typeAttr}>`);
+      listStack.push({ indent, tag, typeAttr, liOpen: false });
+      return;
+    }
+
+    const top = listStack[listStack.length - 1];
+
+    if (indent > top.indent) {
+      out.push(`<${tag}${typeAttr}>`);
+      listStack.push({ indent, tag, typeAttr, liOpen: false });
+      return;
+    }
+
+    closeListsUntilIndent(indent);
+
+    const current = listStack[listStack.length - 1];
+    if (!current || current.indent < indent) {
+      out.push(`<${tag}${typeAttr}>`);
+      listStack.push({ indent, tag, typeAttr, liOpen: false });
+      return;
+    }
+
+    if (current.tag !== tag || current.typeAttr !== typeAttr) {
+      closeOneList();
+      out.push(`<${tag}${typeAttr}>`);
+      listStack.push({ indent, tag, typeAttr, liOpen: false });
+    }
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trimEnd();
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      closeAllLists();
+      i += 1;
       continue;
     }
 
-    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (isTableRow(trimmed) && i + 1 < lines.length && isTableSeparator(lines[i + 1].trim())) {
+      closeAllLists();
+      const header = parseTableCells(lines[i]);
+      const rows: string[][] = [];
+      i += 2;
+
+      while (i < lines.length && isTableRow(lines[i].trim())) {
+        rows.push(parseTableCells(lines[i]));
+        i += 1;
+      }
+
+      out.push(renderTableHtml(header, rows));
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
-      closeListIfNeeded();
+      closeAllLists();
       const level = heading[1].length;
       out.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      i += 1;
       continue;
     }
 
-    const list = line.match(/^[-*]\s+(.*)$/);
+    if (/^---+$/.test(trimmed)) {
+      closeAllLists();
+      out.push("<hr />");
+      i += 1;
+      continue;
+    }
+
+    const list = parseListItem(line);
     if (list) {
-      if (!inList) {
-        out.push("<ul>");
-        inList = true;
+      ensureListLevel(list.indent, list.tag, list.typeAttr);
+      const top = listStack[listStack.length - 1];
+      if (top.liOpen) {
+        out.push("</li>");
       }
-      out.push(`<li>${renderInlineMarkdown(list[1])}</li>`);
+      out.push(`<li>${renderInlineMarkdown(list.itemText)}`);
+      top.liOpen = true;
+      i += 1;
       continue;
     }
 
-    closeListIfNeeded();
-    out.push(`<p>${renderInlineMarkdown(line)}</p>`);
+    closeAllLists();
+    out.push(`<p>${renderInlineMarkdown(trimmed)}</p>`);
+    i += 1;
   }
 
-  closeListIfNeeded();
+  closeAllLists();
   return out.join("\n");
 }
 
@@ -472,5 +666,63 @@ function renderInlineMarkdown(input: string): string {
     return `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`;
   });
 
+  text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
+
   return text;
+}
+
+function isTableRow(line: string): boolean {
+  return /^\|(.+\|)+\s*$/.test(line);
+}
+
+function isTableSeparator(line: string): boolean {
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line);
+}
+
+function parseTableCells(line: string): string[] {
+  const normalized = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return normalized.split("|").map((cell) => cell.trim());
+}
+
+function renderTableHtml(header: string[], rows: string[][]): string {
+  const headerHtml = header
+    .map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`)
+    .join("");
+  const rowsHtml = rows
+    .map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join("")}</tr>`)
+    .join("");
+
+  return `<table><thead><tr>${headerHtml}</tr></thead><tbody>${rowsHtml}</tbody></table>`;
+}
+
+function parseListItem(line: string): { indent: number; tag: "ul" | "ol"; typeAttr: string; itemText: string } | null {
+  const match = line.match(/^(\s*)([-*]|\d+\.|[a-zA-Z]\.)\s+(.*)$/);
+  if (!match) {
+    return null;
+  }
+
+  const indent = computeIndentWidth(match[1]);
+  const marker = match[2];
+  const itemText = match[3];
+
+  if (marker === "-" || marker === "*") {
+    return { indent, tag: "ul", typeAttr: "", itemText };
+  }
+
+  if (/^\d+\.$/.test(marker)) {
+    return { indent, tag: "ol", typeAttr: "", itemText };
+  }
+
+  const type = marker[0] >= "A" && marker[0] <= "Z" ? "A" : "a";
+  return { indent, tag: "ol", typeAttr: ` type="${type}"`, itemText };
+}
+
+function computeIndentWidth(text: string): number {
+  let width = 0;
+  for (const ch of text) {
+    width += ch === "\t" ? 4 : 1;
+  }
+  return width;
 }

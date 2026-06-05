@@ -19,9 +19,22 @@
     "commands": [
       {
         "command": "uiSpecViewer.open",
-        "title": "UI Spec Viewer: Open Split View"
+        "title": "UI Spec Viewer: Open Split View",
+        "icon": {
+          "light": "media/preview-light.svg",
+          "dark": "media/preview-dark.svg"
+        }
       }
-    ]
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "uiSpecViewer.open",
+          "when": "resourceLangId == markdown",
+          "group": "navigation@90"
+        }
+      ]
+    }
   },
   "scripts": {
     "compile": "tsc -p ./",
