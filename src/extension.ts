@@ -37,6 +37,11 @@ class UiSpecPanel {
   private readonly extensionUri: vscode.Uri;
   private readonly context: vscode.ExtensionContext;
   private readonly followActiveEditor: boolean;
+  private editorTopLine = 0;
+  private editorLineCount = 1;
+  private editorScrollRatio = 0;
+  private sourceAnchorLines: number[] = [0];
+  private sourceSeparatorOnlyLines: Set<number> = new Set([]);
   private disposables: vscode.Disposable[] = [];
 
   private static readonly openPanels = new Map<string, UiSpecPanel>();
@@ -167,7 +172,18 @@ class UiSpecPanel {
       })
     );
 
+    this.disposables.push(
+      vscode.window.onDidChangeTextEditorVisibleRanges((e) => {
+        if (e.textEditor.document.uri.toString() !== this.markdownUri.toString()) {
+          return;
+        }
+
+        this.updateScrollRatioFromEditor(e.textEditor, e.visibleRanges);
+      })
+    );
+
     context.subscriptions.push(this);
+    this.syncScrollRatioFromCurrentEditor();
     void this.render();
   }
 
@@ -190,7 +206,46 @@ class UiSpecPanel {
     this.markdownUri = markdownUri;
     this.panel.title = `UI Spec Viewer: ${path.basename(markdownUri.fsPath)}`;
     void this.context.globalState.update("uiSpecViewerUri", markdownUri.toString());
+    this.syncScrollRatioFromCurrentEditor();
     await this.render();
+  }
+
+  private syncScrollRatioFromCurrentEditor(): void {
+    const target = this.markdownUri.toString();
+    const activeEditor = vscode.window.activeTextEditor;
+    if (activeEditor && activeEditor.document.uri.toString() === target) {
+      this.updateScrollRatioFromEditor(activeEditor, activeEditor.visibleRanges);
+      return;
+    }
+
+    const visibleEditor = vscode.window.visibleTextEditors.find((editor) => editor.document.uri.toString() === target);
+    if (visibleEditor) {
+      this.updateScrollRatioFromEditor(visibleEditor, visibleEditor.visibleRanges);
+    }
+  }
+
+  private updateScrollRatioFromEditor(
+    editor: vscode.TextEditor,
+    visibleRanges: readonly vscode.Range[]
+  ): void {
+    if (visibleRanges.length === 0) {
+      return;
+    }
+
+    const maxLineIndex = Math.max(1, editor.document.lineCount - 1);
+    const topLine = Math.min(maxLineIndex, Math.max(0, visibleRanges[0].start.line));
+    const ratio = topLine / maxLineIndex;
+    this.editorTopLine = topLine;
+    this.editorLineCount = Math.max(1, editor.document.lineCount);
+    this.editorScrollRatio = ratio;
+    const jumpToAnchor = this.sourceSeparatorOnlyLines.has(topLine) || this.sourceSeparatorOnlyLines.has(topLine - 1) || this.sourceSeparatorOnlyLines.has(topLine + 1);
+    void this.panel.webview.postMessage({
+      type: "sync-scroll",
+      topLine,
+      lineCount: this.editorLineCount,
+      ratio,
+      jump: jumpToAnchor
+    });
   }
 
   dispose(): void {
@@ -200,6 +255,8 @@ class UiSpecPanel {
 
   private async render(): Promise<void> {
     const markdownText = await this.readMarkdown();
+    this.sourceAnchorLines = extractSourceAnchorLines(markdownText);
+    this.sourceSeparatorOnlyLines = new Set(extractSourceSeparatorLines(markdownText));
     const parsed = parseSnippetPairs(markdownText);
     this.panel.webview.html = this.getWebviewHtml(parsed);
   }
@@ -512,7 +569,148 @@ class UiSpecPanel {
   <main>
     ${bodyHtml}
   </main>
-  <script nonce="${nonce}"></script>
+  <script nonce="${nonce}">
+    (() => {
+      const sourceAnchorLines = ${JSON.stringify(this.sourceAnchorLines)};
+      const initialTopLine = ${this.editorTopLine};
+      const initialLineCount = ${this.editorLineCount};
+      const clampRatio = (value) => {
+        const n = Number(value);
+        if (!Number.isFinite(n)) {
+          return 0;
+        }
+
+        return Math.max(0, Math.min(1, n));
+      };
+
+      const getRenderedAnchorElements = () => Array.from(document.querySelectorAll(
+        "main section.pair, main h1, main h2, main h3, main h4, main h5, main h6, main hr"
+      ));
+
+      const getRenderedAnchorTop = (el) => Math.max(0, window.scrollY + el.getBoundingClientRect().top - 8);
+
+      const findAnchorIndexForTopLine = (topLine) => {
+        if (!Array.isArray(sourceAnchorLines) || sourceAnchorLines.length === 0) {
+          return -1;
+        }
+
+        let idx = 0;
+        for (let i = 0; i < sourceAnchorLines.length; i += 1) {
+          if (sourceAnchorLines[i] <= topLine) {
+            idx = i;
+          } else {
+            break;
+          }
+        }
+
+        return idx;
+      };
+
+      let targetScrollTop = window.scrollY;
+      let animationFrameId = 0;
+
+      const clampScrollTop = (value) => {
+        const root = document.documentElement;
+        const maxScrollTop = Math.max(0, root.scrollHeight - window.innerHeight);
+        const n = Number(value);
+        if (!Number.isFinite(n)) {
+          return 0;
+        }
+
+        return Math.max(0, Math.min(maxScrollTop, n));
+      };
+
+      const setScrollTarget = (nextTop, immediate = false) => {
+        targetScrollTop = clampScrollTop(nextTop);
+
+        if (immediate) {
+          if (animationFrameId !== 0) {
+            window.cancelAnimationFrame(animationFrameId);
+            animationFrameId = 0;
+          }
+          window.scrollTo({ top: targetScrollTop, behavior: "auto" });
+          return;
+        }
+
+        if (animationFrameId !== 0) {
+          return;
+        }
+
+        const step = () => {
+          const currentTop = window.scrollY;
+          const diff = targetScrollTop - currentTop;
+          if (Math.abs(diff) < 0.75) {
+            window.scrollTo({ top: targetScrollTop, behavior: "auto" });
+            animationFrameId = 0;
+            return;
+          }
+
+          window.scrollTo({ top: currentTop + diff * 0.22, behavior: "auto" });
+          animationFrameId = window.requestAnimationFrame(step);
+        };
+
+        animationFrameId = window.requestAnimationFrame(step);
+      };
+
+      const toScrollTopFromRatio = (ratio) => {
+        const clamped = clampRatio(ratio);
+        const root = document.documentElement;
+        const maxScrollTop = Math.max(0, root.scrollHeight - window.innerHeight);
+        return maxScrollTop * clamped;
+      };
+
+      const toScrollTopBySourceLine = (topLine, lineCount, fallbackRatio) => {
+        const anchors = getRenderedAnchorElements();
+        const anchorIndex = findAnchorIndexForTopLine(topLine);
+        if (anchors.length > 0 && anchorIndex >= 0 && sourceAnchorLines.length > 0) {
+          const currentSourceIndex = Math.min(anchorIndex, sourceAnchorLines.length - 1, anchors.length - 1);
+          const nextSourceIndex = Math.min(currentSourceIndex + 1, sourceAnchorLines.length - 1, anchors.length - 1);
+
+          const currentSourceLine = sourceAnchorLines[currentSourceIndex] ?? 0;
+          const nextSourceLine = sourceAnchorLines[nextSourceIndex] ?? currentSourceLine;
+          const currentTop = getRenderedAnchorTop(anchors[currentSourceIndex]);
+          const nextTop = getRenderedAnchorTop(anchors[nextSourceIndex]);
+
+          if (nextSourceIndex === currentSourceIndex || nextSourceLine <= currentSourceLine) {
+            return currentTop;
+          }
+
+          const progress = clampRatio((Number(topLine) - currentSourceLine) / (nextSourceLine - currentSourceLine));
+          return currentTop + (nextTop - currentTop) * progress;
+        }
+
+        const safeLineCount = Math.max(1, Number(lineCount) || 1);
+        const safeTopLine = Math.max(0, Number(topLine) || 0);
+        const computedRatio = clampRatio(safeTopLine / Math.max(1, safeLineCount - 1));
+        return toScrollTopFromRatio(Number.isFinite(computedRatio) ? computedRatio : fallbackRatio);
+      };
+
+      const applyScrollBySourceLine = (topLine, lineCount, fallbackRatio, immediate = false) => {
+        const nextTop = toScrollTopBySourceLine(topLine, lineCount, fallbackRatio);
+        setScrollTarget(nextTop, immediate);
+      };
+
+      const initialRatio = clampRatio(${this.editorScrollRatio.toFixed(6)});
+      const applyInitial = () => window.requestAnimationFrame(() => {
+        applyScrollBySourceLine(initialTopLine, initialLineCount, initialRatio, true);
+      });
+
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", applyInitial, { once: true });
+      } else {
+        applyInitial();
+      }
+
+      window.addEventListener("message", (event) => {
+        const message = event.data;
+        if (!message || message.type !== "sync-scroll") {
+          return;
+        }
+
+        applyScrollBySourceLine(message.topLine, message.lineCount, clampRatio(message.ratio), Boolean(message.jump));
+      });
+    })();
+  </script>
 </body>
 </html>`;
   }
@@ -770,6 +968,83 @@ function clampRatio(value: number): number {
   }
 
   return value;
+}
+
+function extractSourceAnchorLines(markdownText: string): number[] {
+  const lines = markdownText.split(/\r?\n/);
+  const anchors = new Set<number>();
+  let inCodeFence = false;
+
+  anchors.add(0);
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (/^(```|~~~)/.test(trimmed)) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+
+    if (inCodeFence) {
+      continue;
+    }
+
+    const normalized = normalizeMarkerLine(line).trim();
+    if (normalized === "---") {
+      anchors.add(i);
+      continue;
+    }
+
+    if (/^#{1,6}\s+\S/.test(line.trimStart())) {
+      anchors.add(i);
+    }
+  }
+
+  anchors.add(Math.max(0, lines.length - 1));
+  return Array.from(anchors).sort((a, b) => a - b);
+}
+
+function extractSourceSeparatorLines(markdownText: string): number[] {
+  const lines = markdownText.split(/\r?\n/);
+  const separators: number[] = [];
+  let inCodeFence = false;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (/^(```|~~~)/.test(trimmed)) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+
+    if (inCodeFence) {
+      continue;
+    }
+
+    const normalized = normalizeMarkerLine(line).trim();
+    if (normalized === "---") {
+      separators.push(i);
+    }
+  }
+
+  return separators;
+}
+
+function isNearAnyLine(currentLine: number, targetLines: readonly number[], threshold: number): boolean {
+  if (!Number.isFinite(currentLine) || targetLines.length === 0) {
+    return false;
+  }
+
+  const safeThreshold = Math.max(0, Math.floor(threshold));
+  for (const line of targetLines) {
+    if (Math.abs(line - currentLine) <= safeThreshold) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function escapeHtml(input: string): string {
