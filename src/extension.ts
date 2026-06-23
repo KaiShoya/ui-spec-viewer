@@ -693,7 +693,7 @@ function renderCodeBlock(code: string, language: string): string {
 
 function createMarkdownRenderer(): MarkdownRenderer {
   const renderer = new MarkdownIt({
-    html: false,
+    html: true,
     linkify: true,
     typographer: true,
     highlight: (code: string, language: string) => renderCodeBlock(code, language)
