@@ -870,8 +870,8 @@ function parseSnippetPairs(markdownText: string): ParsedContent {
 
   for (const line of lines) {
     const normalized = normalizeMarkerLine(line).trim();
-    const ratioStart = normalized.match(/^--(\d{1,2})$/);
-    const splitEnd = normalized === "---";
+    const ratioStart = normalized.match(/^:::: (\d{1,2})?$/);
+    const splitEnd = normalized === ":::";
 
     if (state === "outside" && splitEnd) {
       hasSplitSyntax = true;
@@ -882,7 +882,7 @@ function parseSnippetPairs(markdownText: string): ParsedContent {
 
     if (ratioStart && state === "left") {
       hasSplitSyntax = true;
-      ratio = clampRatio(Number(ratioStart[1]));
+      ratio = ratioStart[1] !== undefined ? clampRatio(Number(ratioStart[1])) : 50;
       state = "right";
       continue;
     }
@@ -894,13 +894,13 @@ function parseSnippetPairs(markdownText: string): ParsedContent {
     }
 
     if (splitEnd && state === "left") {
-      // If another separator appears before --NN, treat previous chunk as normal markdown
+      // If another separator appears before ::NN, treat previous chunk as normal markdown
       // and restart left block from here. This supports patterns like:
-      // ---
+      // :::
       // ## title (normal markdown)
-      // ---
+      // :::
       // ![image](...)
-      // --50
+      // ::50
       if (leftBuffer.join("\n").trim()) {
         normalBuffer = normalBuffer.concat(leftBuffer);
         leftBuffer = [];
@@ -918,7 +918,7 @@ function parseSnippetPairs(markdownText: string): ParsedContent {
   }
 
   if (state === "right") {
-    warnings.push("最後の右ブロックが --- で閉じられていないため、自動で閉じました。");
+    warnings.push("最後の右ブロックが ::: で閉じられていないため、自動で閉じました。");
     pushPair();
     state = "outside";
   } else if (state === "left") {
@@ -950,8 +950,11 @@ function parseSnippetPairs(markdownText: string): ParsedContent {
 }
 
 function normalizeMarkerLine(input: string): string {
-  // Normalize common dash variants to ASCII hyphen so marker parsing is robust.
-  return input.replace(/[\u2010-\u2015\u2212\uFF0D]/g, "-");
+  // Normalize common dash and colon variants so marker parsing is robust.
+  return input.replace(/[\u2010-\u2015\u2212\uFF0D\uFF1A]/g, (char) => {
+    if (char === "\uFF1A") return ":";
+    return "-";
+  });
 }
 
 function clampRatio(value: number): number {
@@ -991,7 +994,7 @@ function extractSourceAnchorLines(markdownText: string): number[] {
     }
 
     const normalized = normalizeMarkerLine(line).trim();
-    if (normalized === "---") {
+    if (normalized === ":::") {
       anchors.add(i);
       continue;
     }
@@ -1024,7 +1027,7 @@ function extractSourceSeparatorLines(markdownText: string): number[] {
     }
 
     const normalized = normalizeMarkerLine(line).trim();
-    if (normalized === "---") {
+    if (normalized === ":::") {
       separators.push(i);
     }
   }
@@ -1224,7 +1227,7 @@ function renderFallbackMarkdown(input: string): string {
       continue;
     }
 
-    if (/^---+$/.test(trimmed)) {
+    if (/^:::+$/.test(trimmed)) {
       closeAllLists();
       out.push("<hr />");
       i += 1;
