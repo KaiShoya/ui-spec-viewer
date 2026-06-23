@@ -12,6 +12,7 @@
   ],
   "activationEvents": [
     "onCommand:uiSpecViewer.open",
+    "onCommand:uiSpecViewer.openInCurrentView",
     "onLanguage:markdown"
   ],
   "main": "./out/extension.js",
@@ -24,6 +25,14 @@
           "light": "media/preview-light.svg",
           "dark": "media/preview-dark.svg"
         }
+      },
+      {
+        "command": "uiSpecViewer.openInCurrentView",
+        "title": "UI Spec Viewer: Open in Current View",
+        "icon": {
+          "light": "media/preview-light.svg",
+          "dark": "media/preview-dark.svg"
+        }
       }
     ],
     "menus": {
@@ -32,6 +41,18 @@
           "command": "uiSpecViewer.open",
           "when": "resourceLangId == markdown",
           "group": "navigation@90"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "uiSpecViewer.open",
+          "when": "resourceLangId == markdown",
+          "group": "7_modification"
+        },
+        {
+          "command": "uiSpecViewer.openInCurrentView",
+          "when": "resourceLangId == markdown",
+          "group": "7_modification"
         }
       ]
     }

@@ -485,6 +485,21 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(disposable);
 
+  const disposable2 = vscode.commands.registerCommand("uiSpecViewer.openInCurrentView", async () => {
+    const activeEditor = vscode.window.activeTextEditor;
+    const targetUri = activeEditor?.document.languageId === "markdown"
+      ? activeEditor.document.uri
+      : await pickMarkdownFile();
+
+    if (!targetUri) {
+      vscode.window.showInformationMessage("Markdownファイルを開いてから実行してください。");
+      return;
+    }
+
+    UiSpecPanel.create(context, targetUri, vscode.ViewColumn.Active);
+  });
+
+  context.subscriptions.push(disposable2);
   // リロード時に保存されたファイルを復元
   const savedUri = context.globalState.get<string>("uiSpecViewerUri");
   const savedViewColumn = context.globalState.get<number>("uiSpecViewerViewColumn");
