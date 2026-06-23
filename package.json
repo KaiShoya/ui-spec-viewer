@@ -41,11 +41,13 @@
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.12.12",
     "@types/vscode": "^1.90.0",
     "typescript": "^5.5.4"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
     "markdown-it": "^14.1.0"
   }
 }

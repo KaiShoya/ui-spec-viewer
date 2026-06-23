@@ -1,4 +1,6 @@
 import * as path from "path";
+import hljs from "highlight.js/lib/common";
+import MarkdownIt from "markdown-it";
 import * as vscode from "vscode";
 
 type MarkdownRenderer = {
@@ -32,6 +34,7 @@ type ParsedContent = {
 class UiSpecPanel {
   private readonly panel: vscode.WebviewPanel;
   private readonly markdownUri: vscode.Uri;
+  private readonly extensionUri: vscode.Uri;
   private disposables: vscode.Disposable[] = [];
 
   static create(context: vscode.ExtensionContext, markdownUri: vscode.Uri): UiSpecPanel {
@@ -43,7 +46,8 @@ class UiSpecPanel {
         enableScripts: true,
         retainContextWhenHidden: true,
         localResourceRoots: [
-          vscode.Uri.file(path.dirname(markdownUri.fsPath))
+          vscode.Uri.file(path.dirname(markdownUri.fsPath)),
+          vscode.Uri.joinPath(context.extensionUri, "media")
         ]
       }
     );
@@ -54,6 +58,7 @@ class UiSpecPanel {
   private constructor(context: vscode.ExtensionContext, panel: vscode.WebviewPanel, markdownUri: vscode.Uri) {
     this.panel = panel;
     this.markdownUri = markdownUri;
+    this.extensionUri = context.extensionUri;
 
     this.disposables.push(
       this.panel.onDidDispose(() => this.dispose())
@@ -142,7 +147,7 @@ class UiSpecPanel {
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${this.panel.webview.cspSource} data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${this.panel.webview.cspSource} data:; style-src 'unsafe-inline' ${this.panel.webview.cspSource}; script-src 'nonce-${nonce}';" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>UI Spec Viewer</title>
   <style>
@@ -295,6 +300,17 @@ class UiSpecPanel {
       border-top: 1px solid var(--vscode-panel-border);
       background-color: transparent;
     }
+
+    :not(pre) > code {
+      font-family: var(--vscode-editor-font-family, SFMono-Regular, Menlo, Consolas, monospace);
+      font-size: 0.92em;
+      color: var(--vscode-textPreformat-foreground, var(--vscode-editor-foreground));
+      background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.15));
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 5px;
+      padding: 0.1em 0.35em;
+    }
+
   </style>
 </head>
 <body>
@@ -430,10 +446,17 @@ function parseSnippetPairs(markdownText: string): ParsedContent {
     }
 
     if (splitEnd && state === "left") {
-      warnings.push("左ブロック開始後に --NN が無いため、左ブロックを通常Markdownとして扱いました。");
-      normalBuffer = normalBuffer.concat(leftBuffer);
-      leftBuffer = [];
-      state = "outside";
+      // If another separator appears before --NN, treat previous chunk as normal markdown
+      // and restart left block from here. This supports patterns like:
+      // ---
+      // ## title (normal markdown)
+      // ---
+      // ![image](...)
+      // --50
+      if (leftBuffer.join("\n").trim()) {
+        normalBuffer = normalBuffer.concat(leftBuffer);
+        leftBuffer = [];
+      }
       continue;
     }
 
@@ -451,7 +474,6 @@ function parseSnippetPairs(markdownText: string): ParsedContent {
     pushPair();
     state = "outside";
   } else if (state === "left") {
-    warnings.push("最後の左ブロックに対応する --NN が見つからないため、通常Markdownとして扱いました。");
     normalBuffer = normalBuffer.concat(leftBuffer);
     leftBuffer = [];
     state = "outside";
@@ -509,19 +531,34 @@ function escapeHtml(input: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function createMarkdownRenderer(): MarkdownRenderer {
+function renderCodeBlock(code: string, language: string): string {
+  const normalizedLang = language.trim().toLowerCase();
+  let html = escapeHtml(code);
+
   try {
-    const MarkdownItCtor = require("markdown-it") as new (options: Record<string, unknown>) => MarkdownRenderer;
-    return new MarkdownItCtor({
-      html: false,
-      linkify: true,
-      typographer: true
-    });
+    if (normalizedLang && hljs.getLanguage(normalizedLang)) {
+      html = hljs.highlight(code, { language: normalizedLang, ignoreIllegals: true }).value;
+    } else {
+      html = hljs.highlightAuto(code).value;
+    }
   } catch {
-    return {
-      render: renderFallbackMarkdown
-    };
+    html = escapeHtml(code);
   }
+
+  return html;
+}
+
+function createMarkdownRenderer(): MarkdownRenderer {
+  const renderer = new MarkdownIt({
+    html: false,
+    linkify: true,
+    typographer: true,
+    highlight: (code: string, language: string) => renderCodeBlock(code, language)
+  });
+
+  return {
+    render: (input: string) => renderer.render(input)
+  };
 }
 
 function renderFallbackMarkdown(input: string): string {
@@ -602,13 +639,49 @@ function renderFallbackMarkdown(input: string): string {
       continue;
     }
 
-    if (isTableRow(trimmed) && i + 1 < lines.length && isTableSeparator(lines[i + 1].trim())) {
+    // Code block support (``` with optional language)
+    if (/^```/.test(trimmed)) {
       closeAllLists();
-      const header = parseTableCells(lines[i]);
+      const codeContent: string[] = [];
+      const langMatch = trimmed.match(/^```\s*([a-zA-Z0-9_+-]*)/);
+      const language = langMatch?.[1] ?? "";
+      i += 1;
+
+      while (i < lines.length && !/^```/.test(lines[i].trim())) {
+        codeContent.push(lines[i]);
+        i += 1;
+      }
+
+      out.push(renderCodeBlock(codeContent.join("\n"), language));
+      if (i < lines.length && /^```/.test(lines[i].trim())) {
+        i += 1;
+      }
+      continue;
+    }
+
+    // Block quote support (> lines)
+    if (/^\s*>/.test(line)) {
+      closeAllLists();
+      const quoteLines: string[] = [];
+
+      while (i < lines.length && /^\s*>/.test(lines[i])) {
+        const quoteLine = lines[i].replace(/^\s*>\s?/, "");
+        quoteLines.push(quoteLine);
+        i += 1;
+      }
+
+      const quoteContent = renderFallbackMarkdown(quoteLines.join("\n"));
+      out.push(`<blockquote>${quoteContent}</blockquote>`);
+      continue;
+    }
+
+    if (isTableRow(line) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      closeAllLists();
+      const header = parseTableCells(line);
       const rows: string[][] = [];
       i += 2;
 
-      while (i < lines.length && isTableRow(lines[i].trim())) {
+      while (i < lines.length && isTableRow(lines[i])) {
         rows.push(parseTableCells(lines[i]));
         i += 1;
       }
@@ -640,7 +713,8 @@ function renderFallbackMarkdown(input: string): string {
       if (top.liOpen) {
         out.push("</li>");
       }
-      out.push(`<li>${renderInlineMarkdown(list.itemText)}`);
+      const checkbox = list.checkbox ? `<input type="checkbox"${list.checkbox === "checked" ? " checked" : ""} disabled /> ` : "";
+      out.push(`<li>${checkbox}${renderInlineMarkdown(list.itemText)}`);
       top.liOpen = true;
       i += 1;
       continue;
@@ -668,17 +742,20 @@ function renderInlineMarkdown(input: string): string {
 
   text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  text = text.replace(/~~([^~]+)~~/g, "<del>$1</del>");
   text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
 
   return text;
 }
 
 function isTableRow(line: string): boolean {
-  return /^\|(.+\|)+\s*$/.test(line);
+  const trimmed = line.trim();
+  return /^\|(.+\|)+\s*$/.test(trimmed);
 }
 
 function isTableSeparator(line: string): boolean {
-  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line);
+  const trimmed = line.trim();
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(trimmed);
 }
 
 function parseTableCells(line: string): string[] {
@@ -697,7 +774,25 @@ function renderTableHtml(header: string[], rows: string[][]): string {
   return `<table><thead><tr>${headerHtml}</tr></thead><tbody>${rowsHtml}</tbody></table>`;
 }
 
-function parseListItem(line: string): { indent: number; tag: "ul" | "ol"; typeAttr: string; itemText: string } | null {
+function parseListItem(line: string): { indent: number; tag: "ul" | "ol"; typeAttr: string; itemText: string; checkbox?: "checked" | "unchecked" } | null {
+  // Match checkbox pattern: - [ ] text or - [x] text or - [ ] [ ] text (nested)
+  const checkboxMatch = line.match(/^(\s*)([-*]|\d+\.|[a-zA-Z]\.)\s+(\[[ xX]\])\s+(.*)$/);
+  if (checkboxMatch) {
+    const indent = computeIndentWidth(checkboxMatch[1]);
+    const marker = checkboxMatch[2];
+    const checkboxState = checkboxMatch[3];
+    const itemText = checkboxMatch[4];
+    const isChecked = checkboxState === "[x]" || checkboxState === "[X]" ? "checked" : "unchecked";
+
+    return {
+      indent,
+      tag: "ul",
+      typeAttr: "",
+      itemText,
+      checkbox: isChecked
+    };
+  }
+
   const match = line.match(/^(\s*)([-*]|\d+\.|[a-zA-Z]\.)\s+(.*)$/);
   if (!match) {
     return null;
