@@ -33,26 +33,57 @@ type ParsedContent = {
 
 class UiSpecPanel {
   private readonly panel: vscode.WebviewPanel;
-  private readonly markdownUri: vscode.Uri;
+  private markdownUri: vscode.Uri;
   private readonly extensionUri: vscode.Uri;
   private readonly context: vscode.ExtensionContext;
+  private readonly followActiveEditor: boolean;
   private disposables: vscode.Disposable[] = [];
 
   private static readonly openPanels = new Map<string, UiSpecPanel>();
+  private static followActivePanel: UiSpecPanel | undefined;
 
-  static create(context: vscode.ExtensionContext, markdownUri: vscode.Uri, viewColumn: vscode.ViewColumn = vscode.ViewColumn.Beside): UiSpecPanel {
+  static getFollowActivePanel(): UiSpecPanel | undefined {
+    return UiSpecPanel.followActivePanel;
+  }
+
+  static create(
+    context: vscode.ExtensionContext,
+    markdownUri: vscode.Uri,
+    viewColumn: vscode.ViewColumn = vscode.ViewColumn.Beside,
+    options?: { followActiveEditor?: boolean }
+  ): UiSpecPanel {
+    const followActiveEditor = options?.followActiveEditor === true;
+
+    if (followActiveEditor) {
+      const existingFollowPanel = UiSpecPanel.followActivePanel;
+      if (existingFollowPanel) {
+        existingFollowPanel.reveal(viewColumn);
+        void existingFollowPanel.setMarkdownUri(markdownUri);
+        return existingFollowPanel;
+      }
+    }
+
     const key = markdownUri.toString();
     
     // 既に同じファイルで開いているパネルがあれば、それをリサイズして返す
-    const existing = UiSpecPanel.openPanels.get(key);
-    if (existing) {
-      try {
-        existing.panel.reveal(viewColumn);
-        return existing;
-      } catch {
-        // パネルが無効な場合は Map から削除
-        UiSpecPanel.openPanels.delete(key);
+    if (!followActiveEditor) {
+      const existing = UiSpecPanel.openPanels.get(key);
+      if (existing) {
+        try {
+          existing.panel.reveal(viewColumn);
+          return existing;
+        } catch {
+          // パネルが無効な場合は Map から削除
+          UiSpecPanel.openPanels.delete(key);
+        }
       }
+    }
+
+    const localResourceRoots: vscode.Uri[] = [vscode.Uri.joinPath(context.extensionUri, "media")];
+    if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+      localResourceRoots.push(...vscode.workspace.workspaceFolders.map((wf) => wf.uri));
+    } else {
+      localResourceRoots.push(vscode.Uri.file(path.dirname(markdownUri.fsPath)));
     }
 
     const panel = vscode.window.createWebviewPanel(
@@ -62,35 +93,51 @@ class UiSpecPanel {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
-        localResourceRoots: [
-          vscode.Uri.file(path.dirname(markdownUri.fsPath)),
-          vscode.Uri.joinPath(context.extensionUri, "media")
-        ]
+        localResourceRoots
       }
     );
 
-    const uiSpecPanel = new UiSpecPanel(context, panel, markdownUri);
-    UiSpecPanel.openPanels.set(key, uiSpecPanel);
+    const uiSpecPanel = new UiSpecPanel(context, panel, markdownUri, followActiveEditor);
+    if (followActiveEditor) {
+      UiSpecPanel.followActivePanel = uiSpecPanel;
+    } else {
+      UiSpecPanel.openPanels.set(key, uiSpecPanel);
+    }
     
     // 状態に保存
     void context.globalState.update("uiSpecViewerUri", markdownUri.toString());
     void context.globalState.update("uiSpecViewerViewColumn", viewColumn);
+    void context.globalState.update("uiSpecViewerFollowActiveEditor", followActiveEditor);
     
     return uiSpecPanel;
   }
 
-  private constructor(context: vscode.ExtensionContext, panel: vscode.WebviewPanel, markdownUri: vscode.Uri) {
+  private constructor(
+    context: vscode.ExtensionContext,
+    panel: vscode.WebviewPanel,
+    markdownUri: vscode.Uri,
+    followActiveEditor: boolean
+  ) {
     this.panel = panel;
     this.markdownUri = markdownUri;
     this.extensionUri = context.extensionUri;
     this.context = context;
+    this.followActiveEditor = followActiveEditor;
 
     this.disposables.push(
       this.panel.onDidDispose(() => {
-        const key = this.markdownUri.toString();
-        UiSpecPanel.openPanels.delete(key);
+        if (this.followActiveEditor) {
+          if (UiSpecPanel.followActivePanel === this) {
+            UiSpecPanel.followActivePanel = undefined;
+          }
+        } else {
+          const key = this.markdownUri.toString();
+          UiSpecPanel.openPanels.delete(key);
+        }
         // 状態をクリア
         void this.context.globalState.update("uiSpecViewerUri", undefined);
+        void this.context.globalState.update("uiSpecViewerViewColumn", undefined);
+        void this.context.globalState.update("uiSpecViewerFollowActiveEditor", undefined);
         this.dispose();
       })
     );
@@ -122,6 +169,28 @@ class UiSpecPanel {
 
     context.subscriptions.push(this);
     void this.render();
+  }
+
+  reveal(viewColumn: vscode.ViewColumn): void {
+    this.panel.reveal(viewColumn);
+  }
+
+  async setMarkdownUri(markdownUri: vscode.Uri): Promise<void> {
+    const nextKey = markdownUri.toString();
+    const currentKey = this.markdownUri.toString();
+    if (nextKey === currentKey) {
+      return;
+    }
+
+    if (!this.followActiveEditor) {
+      UiSpecPanel.openPanels.delete(currentKey);
+      UiSpecPanel.openPanels.set(nextKey, this);
+    }
+
+    this.markdownUri = markdownUri;
+    this.panel.title = `UI Spec Viewer: ${path.basename(markdownUri.fsPath)}`;
+    void this.context.globalState.update("uiSpecViewerUri", markdownUri.toString());
+    await this.render();
   }
 
   dispose(): void {
@@ -480,7 +549,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
 
-    UiSpecPanel.create(context, targetUri);
+    UiSpecPanel.create(context, targetUri, vscode.ViewColumn.Beside, { followActiveEditor: true });
   });
 
   context.subscriptions.push(disposable);
@@ -496,23 +565,46 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
 
-    UiSpecPanel.create(context, targetUri, vscode.ViewColumn.Active);
+    UiSpecPanel.create(context, targetUri, vscode.ViewColumn.Active, { followActiveEditor: false });
   });
 
   context.subscriptions.push(disposable2);
+
+  const activeEditorWatcher = vscode.window.onDidChangeActiveTextEditor((editor) => {
+    if (!editor || editor.document.languageId !== "markdown") {
+      return;
+    }
+
+    const followPanel = UiSpecPanel.getFollowActivePanel();
+    if (!followPanel) {
+      return;
+    }
+
+    void followPanel.setMarkdownUri(editor.document.uri);
+  });
+  context.subscriptions.push(activeEditorWatcher);
+
   // リロード時に保存されたファイルを復元
   const savedUri = context.globalState.get<string>("uiSpecViewerUri");
   const savedViewColumn = context.globalState.get<number>("uiSpecViewerViewColumn");
+  const savedFollowActiveEditor = context.globalState.get<boolean>("uiSpecViewerFollowActiveEditor") ?? false;
   if (savedUri) {
     setTimeout(() => {
       try {
         const uri = vscode.Uri.parse(savedUri);
         const viewColumn = savedViewColumn ?? vscode.ViewColumn.Beside;
-        UiSpecPanel.create(context, uri, viewColumn);
+        const panel = UiSpecPanel.create(context, uri, viewColumn, { followActiveEditor: savedFollowActiveEditor });
+        if (savedFollowActiveEditor) {
+          const activeEditor = vscode.window.activeTextEditor;
+          if (activeEditor?.document.languageId === "markdown") {
+            void panel.setMarkdownUri(activeEditor.document.uri);
+          }
+        }
       } catch {
         // URI のパースに失敗した場合は無視
         void context.globalState.update("uiSpecViewerUri", undefined);
         void context.globalState.update("uiSpecViewerViewColumn", undefined);
+        void context.globalState.update("uiSpecViewerFollowActiveEditor", undefined);
       }
     }, 500);
   }
