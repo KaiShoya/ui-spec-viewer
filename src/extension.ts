@@ -870,7 +870,7 @@ function parseSnippetPairs(markdownText: string): ParsedContent {
 
   for (const line of lines) {
     const normalized = normalizeMarkerLine(line).trim();
-    const ratioStart = normalized.match(/^:::: (\d{1,2})?$/);
+    const ratioStart = normalized.match(/^::::\s*(\d{1,2})?$/);
     const splitEnd = normalized === ":::";
 
     if (state === "outside" && splitEnd) {
