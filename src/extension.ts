@@ -35,13 +35,30 @@ class UiSpecPanel {
   private readonly panel: vscode.WebviewPanel;
   private readonly markdownUri: vscode.Uri;
   private readonly extensionUri: vscode.Uri;
+  private readonly context: vscode.ExtensionContext;
   private disposables: vscode.Disposable[] = [];
 
-  static create(context: vscode.ExtensionContext, markdownUri: vscode.Uri): UiSpecPanel {
+  private static readonly openPanels = new Map<string, UiSpecPanel>();
+
+  static create(context: vscode.ExtensionContext, markdownUri: vscode.Uri, viewColumn: vscode.ViewColumn = vscode.ViewColumn.Beside): UiSpecPanel {
+    const key = markdownUri.toString();
+    
+    // 既に同じファイルで開いているパネルがあれば、それをリサイズして返す
+    const existing = UiSpecPanel.openPanels.get(key);
+    if (existing) {
+      try {
+        existing.panel.reveal(viewColumn);
+        return existing;
+      } catch {
+        // パネルが無効な場合は Map から削除
+        UiSpecPanel.openPanels.delete(key);
+      }
+    }
+
     const panel = vscode.window.createWebviewPanel(
       "uiSpecViewer",
       `UI Spec Viewer: ${path.basename(markdownUri.fsPath)}`,
-      vscode.ViewColumn.Beside,
+      viewColumn,
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -52,16 +69,30 @@ class UiSpecPanel {
       }
     );
 
-    return new UiSpecPanel(context, panel, markdownUri);
+    const uiSpecPanel = new UiSpecPanel(context, panel, markdownUri);
+    UiSpecPanel.openPanels.set(key, uiSpecPanel);
+    
+    // 状態に保存
+    void context.globalState.update("uiSpecViewerUri", markdownUri.toString());
+    void context.globalState.update("uiSpecViewerViewColumn", viewColumn);
+    
+    return uiSpecPanel;
   }
 
   private constructor(context: vscode.ExtensionContext, panel: vscode.WebviewPanel, markdownUri: vscode.Uri) {
     this.panel = panel;
     this.markdownUri = markdownUri;
     this.extensionUri = context.extensionUri;
+    this.context = context;
 
     this.disposables.push(
-      this.panel.onDidDispose(() => this.dispose())
+      this.panel.onDidDispose(() => {
+        const key = this.markdownUri.toString();
+        UiSpecPanel.openPanels.delete(key);
+        // 状態をクリア
+        void this.context.globalState.update("uiSpecViewerUri", undefined);
+        this.dispose();
+      })
     );
 
     this.disposables.push(
@@ -151,6 +182,101 @@ class UiSpecPanel {
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>UI Spec Viewer</title>
   <style>
+    /* GitHub Dark syntax highlighting theme for highlight.js */
+    pre {
+      margin-top: 0;
+      margin-bottom: 16px;
+      border-radius: 8px;
+      border: 1px solid var(--vscode-panel-border);
+      background: var(--vscode-textCodeBlock-background, #0d1117);
+      overflow: auto;
+      max-height: 420px;
+    }
+
+    pre > code {
+      display: block;
+      padding: 14px 16px;
+      font-family: var(--vscode-editor-font-family, SFMono-Regular, Menlo, Consolas, monospace);
+      font-size: 12.5px;
+      line-height: 1.55;
+      white-space: pre;
+      min-width: max-content;
+    }
+
+    .hljs-doctag,
+    .hljs-keyword,
+    .hljs-meta .hljs-keyword,
+    .hljs-template-tag,
+    .hljs-template-variable,
+    .hljs-type,
+    .hljs-variable.language_ {
+      color: #ff7b72;
+    }
+    .hljs-title,
+    .hljs-title.class_,
+    .hljs-title.class_.inherited__,
+    .hljs-title.function_ {
+      color: #d2a8ff;
+    }
+    .hljs-attr,
+    .hljs-attribute,
+    .hljs-literal,
+    .hljs-meta,
+    .hljs-number,
+    .hljs-operator,
+    .hljs-variable,
+    .hljs-selector-attr,
+    .hljs-selector-class,
+    .hljs-selector-id {
+      color: #79c0ff;
+    }
+    .hljs-regexp,
+    .hljs-string,
+    .hljs-meta .hljs-string {
+      color: #a5d6ff;
+    }
+    .hljs-built_in,
+    .hljs-symbol {
+      color: #ffa657;
+    }
+    .hljs-comment,
+    .hljs-code,
+    .hljs-formula {
+      color: #8b949e;
+    }
+    .hljs-name,
+    .hljs-quote,
+    .hljs-selector-tag,
+    .hljs-selector-pseudo {
+      color: #7ee787;
+    }
+    .hljs-subst {
+      color: #c9d1d9;
+    }
+    .hljs-section {
+      color: #1f6feb;
+      font-weight: bold;
+    }
+    .hljs-bullet {
+      color: #f2cc60;
+    }
+    .hljs-emphasis {
+      color: #c9d1d9;
+      font-style: italic;
+    }
+    .hljs-strong {
+      color: #c9d1d9;
+      font-weight: bold;
+    }
+    .hljs-addition {
+      color: #aff5b4;
+      background-color: #033a16;
+    }
+    .hljs-deletion {
+      color: #ffdcd7;
+      background-color: #67060c;
+    }
+
     body {
       margin: 0 auto;
       padding: 0 22px;
@@ -358,6 +484,23 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   context.subscriptions.push(disposable);
+
+  // リロード時に保存されたファイルを復元
+  const savedUri = context.globalState.get<string>("uiSpecViewerUri");
+  const savedViewColumn = context.globalState.get<number>("uiSpecViewerViewColumn");
+  if (savedUri) {
+    setTimeout(() => {
+      try {
+        const uri = vscode.Uri.parse(savedUri);
+        const viewColumn = savedViewColumn ?? vscode.ViewColumn.Beside;
+        UiSpecPanel.create(context, uri, viewColumn);
+      } catch {
+        // URI のパースに失敗した場合は無視
+        void context.globalState.update("uiSpecViewerUri", undefined);
+        void context.globalState.update("uiSpecViewerViewColumn", undefined);
+      }
+    }, 500);
+  }
 }
 
 export function deactivate(): void {
